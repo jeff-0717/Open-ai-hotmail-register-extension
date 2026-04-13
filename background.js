@@ -1,4 +1,4 @@
-import { markAccountStatus } from './shared/account-ledger.js';
+import { markAccountStatus, resolveCurrentAccountSelection } from './shared/account-ledger.js';
 import { continueSingleAutoFlow, runAutoFlowBatch, runSingleAutoFlow } from './shared/auto-flow.js';
 import { createAutoRunPausedError } from './shared/auto-run-control.js';
 import { buildAutoRestartRuntimeUpdates } from './shared/auto-restart.js';
@@ -208,17 +208,20 @@ function buildClient(settings) {
 
 async function resolveCurrentAccount(state) {
   const client = buildClient(state);
-  const blockedAddresses = Object.entries(state.usedAccounts || {})
-    .filter(([, meta]) => meta?.status === 'completed')
-    .map(([address]) => address);
-  const account = await client.findFirstUnregisteredAccount({
-    tagName: '已注册',
-    excludedAddresses: blockedAddresses,
+  const accounts = await client.listAccounts();
+  const selection = resolveCurrentAccountSelection({
+    accounts,
+    ledger: state.usedAccounts || {},
+    startIndex: state.currentAccountIndex,
   });
+  const account = selection?.account || null;
   if (!account) {
     throw new Error('没有可用邮箱，可能 Outlook API 中的邮箱都已打上“已注册”标签或已被跳过');
   }
-  await setRuntime({ currentAccount: account, currentAccountIndex: 0 });
+  await setRuntime({
+    currentAccount: account,
+    currentAccountIndex: selection.index,
+  });
   return account;
 }
 
@@ -761,19 +764,19 @@ const handlers = {
   },
   async PREPARE_NEXT_ACCOUNT() {
     const state = await getState();
-    const blockedAddresses = Object.entries(state.usedAccounts || {})
-      .filter(([, meta]) => meta?.status === 'completed')
-      .map(([address]) => address);
-    const match = await buildClient(state).findFirstUnregisteredAccount({
-      tagName: '已注册',
-      excludedAddresses: blockedAddresses,
+    const accounts = await buildClient(state).listAccounts();
+    const selection = resolveCurrentAccountSelection({
+      accounts,
+      ledger: state.usedAccounts || {},
+      startIndex: state.currentAccountIndex,
     });
+    const match = selection?.account || null;
     if (!match?.address) {
       throw new Error('没有更多未注册邮箱可用');
     }
     await setRuntime({
       currentAccount: match,
-      currentAccountIndex: 0,
+      currentAccountIndex: selection.index,
       currentEmailRecord: null,
     });
     await addLog(`当前账号：${match.address}`, 'ok');
@@ -781,21 +784,18 @@ const handlers = {
   },
   async ADVANCE_ACCOUNT() {
     const state = await getState();
-    const blockedAddresses = Object.entries(state.usedAccounts || {})
-      .filter(([, meta]) => meta?.status === 'completed')
-      .map(([address]) => address);
-    if (state.currentAccount?.address) {
-      blockedAddresses.push(state.currentAccount.address);
-    }
-    const nextAccount = await buildClient(state).findFirstUnregisteredAccount({
-      tagName: '已注册',
-      excludedAddresses: blockedAddresses,
+    const accounts = await buildClient(state).listAccounts();
+    const selection = resolveCurrentAccountSelection({
+      accounts,
+      ledger: state.usedAccounts || {},
+      startIndex: Number(state.currentAccountIndex || 0) + 1,
     });
+    const nextAccount = selection?.account || null;
     if (!nextAccount?.address) {
       throw new Error('没有更多未注册邮箱可用');
     }
     await setRuntime({
-      currentAccountIndex: 0,
+      currentAccountIndex: selection.index,
       currentAccount: nextAccount,
       currentEmailRecord: null,
     });

@@ -5,6 +5,7 @@ import {
   findNextAvailableAccount,
   getAccountStatus,
   markAccountStatus,
+  resolveCurrentAccountSelection,
 } from '../shared/account-ledger.js';
 
 test('findNextAvailableAccount skips completed accounts', () => {
@@ -40,4 +41,41 @@ test('findNextAvailableAccount returns null when all accounts are completed', ()
 
   const result = findNextAvailableAccount(accounts, ledger);
   assert.equal(result, null);
+});
+
+test('resolveCurrentAccountSelection respects currentAccountIndex and returns the matched cursor', () => {
+  const accounts = [
+    { address: 'first@hotmail.com' },
+    { address: 'second@hotmail.com' },
+    { address: 'third@hotmail.com' },
+  ];
+
+  const result = resolveCurrentAccountSelection({
+    accounts,
+    ledger: {},
+    startIndex: 1,
+  });
+
+  assert.deepEqual(result, {
+    account: { address: 'second@hotmail.com' },
+    index: 1,
+  });
+});
+
+test('resolveCurrentAccountSelection skips accounts that already have the 已注册 tag', () => {
+  const accounts = [
+    { address: 'registered@hotmail.com', tags: [{ name: '已注册' }] },
+    { address: 'fresh@hotmail.com', tags: [] },
+  ];
+
+  const result = resolveCurrentAccountSelection({
+    accounts,
+    ledger: {},
+    startIndex: 0,
+  });
+
+  assert.deepEqual(result, {
+    account: { address: 'fresh@hotmail.com', tags: [] },
+    index: 1,
+  });
 });

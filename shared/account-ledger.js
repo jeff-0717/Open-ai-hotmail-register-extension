@@ -32,3 +32,25 @@ export function findNextAvailableAccount(accounts = [], ledger = {}, startIndex 
   }
   return null;
 }
+
+export function resolveCurrentAccountSelection({
+  accounts = [],
+  ledger = {},
+  startIndex = 0,
+  tagName = '已注册',
+} = {}) {
+  for (let index = Math.max(0, Number(startIndex) || 0); index < accounts.length; index += 1) {
+    const account = accounts[index];
+    const status = getAccountStatus(ledger, account?.address)?.status;
+    const hasRegisteredTag = Array.isArray(account?.tags)
+      && account.tags.some((tag) => tag?.name === tagName);
+    if (status === 'completed' || hasRegisteredTag) {
+      continue;
+    }
+    return {
+      account,
+      index,
+    };
+  }
+  return null;
+}

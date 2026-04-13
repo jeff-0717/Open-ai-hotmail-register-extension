@@ -1,5 +1,80 @@
 # HANDOFF
 
+## 2026-04-13 “下一个账号”仍复用旧账号补充（以下内容补充最新状态）
+
+- 补充时间：2026-04-13
+- 触发背景：
+  - 用户真实联调中，Step 8 因进入 `https://auth.openai.com/add-phone` 失败后，点击侧边栏 `下一个账号`
+  - 日志虽然出现：
+    - `已切换到下一个账号，准备重新开始第 1/3 轮`
+  - 但下一轮 `当前账号` 与 `已定位平台邮箱记录` 仍然是同一个旧邮箱
+
+### 本次确认的根因
+
+- `RESTART_WITH_NEXT_ACCOUNT` / `performAutoRestart('next')`
+  - 只把 runtime 里的 `currentAccountIndex` 加 1
+  - 并清空 `currentAccount`
+
+- 但真正重新选账号时：
+  - `resolveCurrentAccount()`
+  - `PREPARE_NEXT_ACCOUNT()`
+  - `ADVANCE_ACCOUNT()`
+  - 仍然直接调用 `findFirstUnregisteredAccount()` 取“第一个未注册账号”
+  - 完全没有消费 `currentAccountIndex`
+
+- 结果：
+  - 失败后即使点了 `下一个账号`
+  - 重新开始时仍会再次选中邮箱池中的第一个可用账号
+  - 所以日志里看起来“切到了下一个”，实际还是原账号
+
+### 本次修复
+
+- `shared/account-ledger.js`
+  - 新增 `resolveCurrentAccountSelection({ accounts, ledger, startIndex })`
+  - 统一根据 runtime 中的 `currentAccountIndex` 选择当前应使用的账号
+  - 选择时仍保留原有约束：
+    - 跳过账本里已 `completed` 的账号
+    - 跳过远端已带 `已注册` 标签的账号
+
+- `background.js`
+  - `resolveCurrentAccount()` 改为通过 `listAccounts()` + `resolveCurrentAccountSelection()` 选账号
+  - `PREPARE_NEXT_ACCOUNT()` 改为真正从 `currentAccountIndex` 对应游标开始选账号
+  - `ADVANCE_ACCOUNT()` 改为从 `currentAccountIndex + 1` 继续向后选
+  - 每次选中账号后，把命中的真实索引回写到 `currentAccountIndex`
+
+### 修复后的行为
+
+- `重启本轮`
+  - 保持原 `currentAccountIndex`
+  - 会重新选择当前这一个账号
+
+- `下一个账号`
+  - `currentAccountIndex` 先加 1
+  - 下一轮会从后一个游标位置开始取账号
+  - 不会再重复命中刚失败的那个邮箱
+
+### 本次修改的关键文件
+
+- `shared/account-ledger.js`
+- `background.js`
+- `tests/account-ledger.test.js`
+
+### fresh 验证证据
+
+```bash
+node --test tests/account-ledger.test.js
+node --test tests/auto-restart.test.js tests/luckmail-client.test.js
+npm test
+find . -name '*.js' -not -path './.git/*' -print0 | xargs -0 -n1 node --check
+```
+
+结果：
+
+- 新增账号游标回归测试通过
+- `auto-restart` / `luckmail-client` 定向回归通过
+- 全量 `104/104` 通过
+- JS 语法检查通过
+
 ## 2026-04-13 注册页识别进一步收紧补充（以下内容补充最新状态）
 
 - 补充时间：2026-04-13
@@ -1293,3 +1368,191 @@ find . -name '*.js' -not -path './.git/*' -print0 | xargs -0 -n1 node --check
 - 定向测试通过
 - 全量 `75/75` 通过
 - JS 语法检查通过
+
+## 2026-04-13 当前最新总进展（以下内容为最新有效交接，请优先参考）
+
+- 补充时间：2026-04-13
+- 当前目标：
+  - 稳定整个 OpenAI OAuth 注册 / 登录自动流程
+  - 保证失败后可以从正确步骤继续
+  - 让 Side Panel UI 与当前真实能力一致，去掉误导性按钮/配置
+  - 成功后自动在 Outlook Email 平台打 `已注册` 标签，并关闭 OpenAI 认证页
+
+### 这几轮已经确认有效的改动
+
+- 账号来源：
+  - 已不再依赖手工账号池
+  - 当前取号逻辑改为：
+    - 从 Outlook API 拉取邮箱
+    - 选择未打 `已注册` 标签的邮箱
+    - 同时跳过本地 `usedAccounts` 中已标记 `completed` 的邮箱
+  - `下一个账号` 现在会额外排除“当前这个邮箱”，不会再重复拿到同一个地址
+
+- 流程继续：
+  - `继续` 按钮不再固定从旧失败点恢复
+  - 现在的恢复逻辑已经改成：
+    - 依据 `stepStatuses`
+    - 从“最后一个已完成步骤之后”的下一步继续
+  - 这意味着：
+    - 如果某一步失败后，用户手动把后续某一步跑完
+    - 再点 `继续`
+    - 会从最新已经推进到的位置继续，而不是回到更早的旧失败点
+
+- Step 3：
+  - 默认优先使用 `默认登录密码`
+  - 对 `email-verification` 页面增加了直接兜底：
+    - 若页面已经是邮箱验证码页
+    - Step 3 再次收到重复执行时，直接视为已完成
+    - 不再报“当前仍未进入真正的注册页”
+  - “邮箱已注册”判断已经收紧：
+    - 只认明确 account exists 错误
+    - 不再因为注册页常驻 `Already have an account? Log in` 误判
+
+- Step 4 / Step 7：
+  - 验证码轮询日志已经细化
+  - 新旧邮件判定增加了 `15s` 宽限窗口
+  - 对“邮件时间只比轮询起点早几秒”的正确验证码，不再强制等到超时 fallback
+
+- Step 5：
+  - 旧实现只会粗暴点一次提交，导致 about-you / age / birthday 实际没填完却被判成功
+  - 现在 Step 5 会：
+    - 等待资料字段真实出现
+    - 强制要求姓名字段存在
+    - 强制要求年龄或生日字段存在
+    - 填完后提交
+    - 等待确认离开资料页
+  - 若字段没出现或提交后仍停在资料页，会在 Step 5 当场失败，不再误进 Step 6/8
+
+- Step 8：
+  - 现在采用双保险点击 Continue：
+    1. 页面内先原生点击一次
+    2. 若短时间无跳转，再自动补发 debugger click
+  - 比以前只发 debugger click 更稳
+
+- Step 9：
+  - 不再刷新旧的 CPA 页面
+  - 优先复用已有 CPA tab
+  - 对 `oauth flow is not pending` 增加软等待，不会立刻失败
+  - 整个流程完成后，已打开的 OpenAI 认证页会自动关闭
+
+- 成功收尾：
+  - `COMPLETE_CURRENT_ACCOUNT` 现在负责：
+    - 把邮箱记入本地 `usedAccounts`
+    - 调用内部 API 给 Outlook 平台打 `已注册` 标签
+    - 关闭 OpenAI 认证页标签
+  - 手动调试时，跑完 Step 9 后必须再点一次 `完成流程`
+    - 否则 Outlook 平台不会立即出现 `已注册` 标签
+
+### 这几轮确认无效 / 不可靠的路径
+
+- 只靠 `receivedAt >= minReceivedAt` 判定“新邮件”
+  - 会导致正确验证码总是在超时 fallback 阶段才被使用
+  - 目前已用时间宽限窗口缓解，但如果后续仍不稳，建议升级成 `messageId` 去重策略
+
+- Step 8 只靠 debugger click
+  - 某些页面状态下会提示“已发送调试器点击”，但实际没点中
+  - 现在已改成原生点击 + debugger fallback
+
+- Step 3 只看整页密码规则说明文字
+  - 会误报“密码不符合规则”
+  - 现在已经改成只看真实错误节点
+
+- Step 5 只要点了提交就算成功
+  - 已证实会导致 `about-you` 没填完却继续跑
+  - 现已废弃这种判断
+
+- `失败自动跳过` / `平台侧邮箱池` / `记录成功结果`
+  - 这些 UI 复选框与对应流程分支都已移除
+  - 不要再按老 README / 老截图理解当前 UI
+
+### 当前 UI 已做的清理
+
+- 已删除：
+  - `账号池`
+  - `解析账号`
+  - `同步账号`
+  - `查邮箱记录`
+  - `打开 OAuth`
+  - `标记已用`
+  - `清空账本`
+  - `当前状态` 整块
+  - 页头副标题
+  - 3 个旧复选框
+- 已新增：
+  - `完成流程` 按钮
+- 页头当前布局：
+  - 第一行：`自动流程控制台` + `保存设置`
+  - 第二行：`轮数` + `自动运行` + `继续/重新开始` + `下一个账号`
+
+### README 当前已同步内容
+
+- 已更新为和当前实现一致
+- 已补：
+  - 项目独特性
+  - 快速开始
+  - 项目结构
+  - 致谢与官方链接 / 参考仓库链接
+- 当前 README 说明：
+  - 只有整轮认证真正完成后才会打 `已注册` 标签
+  - 这样既避免重复消耗，也避免因插件报错 / 中断误排除未完成邮箱
+
+### 当前仍需重点关注 / 下一位 agent 最值得继续看的点
+
+- Step 8 真实联调稳定性仍需观察
+  - 代码已经是双保险点击
+  - 但如果用户仍反馈 Continue 点不到，需要继续采集真实页面 DOM / button rect / disabled 状态
+  - 关键文件：
+    - `content/signup-page.js`
+    - `background.js`
+    - `shared/step8-click-plan.js`
+
+- 验证码轮询目前只是“时间宽限窗口”方案
+  - 若后续仍出现：
+    - 每次都要等到超时才拿到正确验证码
+  - 下一步建议：
+    - 引入 `messageId` 级别的新旧邮件判定
+  - 关键文件：
+    - `shared/verification-poller.js`
+    - `background.js`
+
+- Step 5 的资料页字段覆盖还比较保守
+  - 现在已支持常见 `name / age / birthday`
+  - 若后续真实页面出现 React Aria 日期控件或新字段结构，建议继续参考旧仓库更完整的 `step5_fillNameBirthday`
+  - 关键文件：
+    - `content/signup-page.js`
+    - 参考：
+      `/Users/zhenghan/Downloads/古法注册/codex-oauth-automation-extension-master 2/content/signup-page.js`
+
+### 下一位 agent 继续时的建议顺序
+
+1. 先 reload 扩展
+2. 用 1 个真实邮箱做完整自动流程联调
+3. 重点观察：
+   - Step 3 是否还会在 `email-verification` 上假失败
+   - Step 5 是否真的填完资料页
+   - Step 8 是否还需要手动点击 Continue
+   - 成功后是否自动关闭 OpenAI 认证页
+   - 点 `完成流程` 后 Outlook 平台是否出现 `已注册` 标签
+4. 若继续出问题：
+   - 优先看最新日志
+   - 再对应看：
+     - `content/signup-page.js`
+     - `background.js`
+     - `shared/verification-poller.js`
+     - `shared/auto-flow.js`
+
+### 最近有效验证命令
+
+```bash
+cd '/Users/zhenghan/Downloads/古法注册/hotmail-register-extension'
+npm test
+find . -name '*.js' -not -path './.git/*' -print0 | xargs -0 -n1 node --check
+node --test tests/continue-auto-flow.test.js
+node --test tests/verification-poller.test.js
+node --test tests/open-oauth-target.test.js
+```
+
+### 当前测试状态
+
+- 最近一次全量：`102/102` 通过
+- 所有新增逻辑都已补对应单测或结构测试
