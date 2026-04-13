@@ -1,5 +1,64 @@
 # HANDOFF
 
+## 2026-04-13 成功后认证页未自动关闭补充（以下内容补充最新状态）
+
+- 补充时间：2026-04-13
+- 触发背景：
+  - 用户反馈整轮认证已经成功，但最后成功页没有自动关闭
+
+### 本次确认的根因
+
+- `background.js`
+  - 自动流程成功后其实已经会进入 `COMPLETE_CURRENT_ACCOUNT`
+  - 该 handler 也确实会调用 `closeAuthTabs()`
+- 真正的问题在于：
+  - `closeAuthTabs()` 依赖 `shared/open-oauth-target.js -> listAuthTabIds()`
+  - 旧逻辑只会关闭“当前 URL 仍然属于 OpenAI auth host”的标签页
+  - 但真实成功场景里，原来的 `authTabId` 往往已经跳转到成功页
+  - 这时它虽然还是本轮认证页所在 tab，但 URL 可能不再命中 `auth.openai.com / accounts.openai.com`
+  - 结果就是：
+    - `COMPLETE_CURRENT_ACCOUNT` 执行了
+    - 但成功页 tab 没被识别到，自然也就没被关闭
+
+### 本次修复
+
+- `shared/open-oauth-target.js`
+  - `listAuthTabIds(tabs, preferredTabId)` 现在支持保留当前会话记录的 `preferredTabId`
+  - 即使该 tab 已经从 auth host 跳走，只要还是本轮的 `authTabId`，也会被纳入关闭列表
+  - 同时仍会继续收集其他 auth host 标签页
+
+- `background.js`
+  - `closeAuthTabs()` 现在会把 `state.authTabId` 传给 `listAuthTabIds(...)`
+  - 含义：
+    - 优先关闭当前流程追踪到的认证 tab
+    - 再关闭其余还停留在 OpenAI auth host 的标签页
+
+### 修复后的行为
+
+- 整轮成功后：
+  - 如果认证 tab 还停留在 `auth.openai.com`，会关闭
+  - 如果认证 tab 已经跳到成功页，也会继续关闭
+
+### 本次修改的关键文件
+
+- `shared/open-oauth-target.js`
+- `background.js`
+- `tests/open-oauth-target.test.js`
+
+### fresh 验证证据
+
+```bash
+node --test tests/open-oauth-target.test.js
+node --test tests/auto-flow.test.js tests/continue-auto-flow.test.js
+node --check shared/open-oauth-target.js background.js
+```
+
+结果：
+
+- 新增的“成功页跳转后仍保留 preferred auth tab 用于关闭”测试通过
+- 自动流程与继续流程回归测试通过
+- 相关文件语法检查通过
+
 ## 2026-04-13 未读优先与本地已消费验证码邮件去重补充（以下内容补充最新状态）
 
 - 补充时间：2026-04-13

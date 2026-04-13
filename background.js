@@ -515,8 +515,9 @@ async function openOauthUrl(oauthUrl) {
 }
 
 async function closeAuthTabs() {
+  const state = await getState();
   const tabs = await chrome.tabs.query({});
-  const authTabIds = listAuthTabIds(tabs);
+  const authTabIds = listAuthTabIds(tabs, state.authTabId);
   if (!authTabIds.length) {
     return 0;
   }

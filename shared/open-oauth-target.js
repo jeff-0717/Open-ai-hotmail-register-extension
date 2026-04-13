@@ -22,10 +22,22 @@ export function chooseOauthTabCandidate({ currentTab = null, tabs = [], preferre
   return tabs.find((tab) => tab?.url && isAuthHostUrl(tab.url)) || null;
 }
 
-export function listAuthTabIds(tabs = []) {
-  return tabs
+export function listAuthTabIds(tabs = [], preferredTabId = null) {
+  const authIds = tabs
     .filter((tab) => tab?.id && tab?.url && isAuthHostUrl(tab.url))
     .map((tab) => tab.id);
+
+  if (preferredTabId != null) {
+    const preferredTab = tabs.find((tab) => tab?.id === preferredTabId);
+    if (preferredTab?.id) {
+      return [
+        preferredTab.id,
+        ...authIds.filter((id) => id !== preferredTab.id),
+      ];
+    }
+  }
+
+  return authIds;
 }
 
 export { isAuthHostUrl };
